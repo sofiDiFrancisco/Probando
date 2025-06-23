@@ -5,7 +5,7 @@ from PIL import Image
 
 def load_model(model_path, num_classes, device):
     """Loads the trained PyTorch model state dictionary."""
-    model = models.resnet18(pretrained=False) # Load the model structure
+    model = models.resnet18(weights=None) # Load the model structure
     num_features = model.fc.in_features
     model.fc = nn.Linear(num_features, num_classes) # Adjust the final layer
     model.load_state_dict(torch.load(model_path, map_location=device)) # Load the state dict
