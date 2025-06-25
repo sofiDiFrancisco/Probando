@@ -1,8 +1,9 @@
+%%writefile app.py
 import streamlit as st
 import torch
 import torch.nn as nn
 from torchvision import models, transforms
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont # Import ImageDraw and ImageFont
 import sys
 import os
 import time
@@ -59,6 +60,8 @@ def load_object_detection_model(model_path, num_classes):
         print(f"Error: Object detection model file not found at {model_path}")
         print("Please ensure 'faster_rcnn_fruit_detector.pth' exists and is in the correct directory.")
         return None # Return None if model not found
+
+    return model
 
 
 def preprocess_image_classification(image: Image.Image):
@@ -163,9 +166,26 @@ def detect_fruits(image: Image.Image, detection_model_path="faster_rcnn_fruit_de
                          freshness_prediction = "Freshness prediction not available."
                          if cls_model:
                              try:
-                                 cropped_image = image.crop((int(box[0]), int(box[1]), int(box[2]), int(box[3]))).convert('RGB')
-                                 processed_cropped_image = preprocess_image_classification(cropped_image)
-                                 freshness_prediction = predict_classification(cls_model, processed_cropped_image)
+                                 # Ensure box coordinates are within image bounds for cropping
+                                 img_width, img_height = image.size
+                                 cropped_box = (
+                                     max(0, int(box[0])),
+                                     max(0, int(box[1])),
+                                     min(img_width, int(box[2])),
+                                     min(img_height, int(box[3]))
+                                 )
+                                 cropped_image = image.crop(cropped_box).convert('RGB')
+
+                                 # Ensure cropped image is not empty
+                                 if cropped_image.size[0] > 0 and cropped_image.size[1] > 0:
+                                     # Preprocess the cropped image for classification
+                                     processed_cropped_image = preprocess_image_classification(cropped_image)
+                                     # Predict freshness
+                                     freshness_prediction = predict_classification(cls_model, processed_cropped_image)
+                                 else:
+                                     freshness_prediction = "Could not crop valid region for freshness."
+
+
                              except Exception as e:
                                  print(f"Error during freshness classification for detected object: {e}")
                                  freshness_prediction = "Error during freshness prediction."
@@ -178,6 +198,7 @@ def detect_fruits(image: Image.Image, detection_model_path="faster_rcnn_fruit_de
     return detected_objects
 
 
+@st.cache_data(ttl=3600) # Cache API responses for 1 hour
 def get_fruit_info_from_api(fruit_name):
     """Fetches general fruit information from the Fruityvice API."""
     try:
@@ -193,7 +214,7 @@ def get_fruit_info_from_api(fruit_name):
         elif clean_fruit_name == 'oranges':
              clean_fruit_name = 'orange'
 
-        api_url = f"https://www.fruityvice.com/api/fruit/{clean_fruit_name.lower()}"
+        api_url = f"https://www.fruityvice.com/api/fruit/{clean_fruit_name.lower()}" # Ensure lowercase
         response = requests.get(api_url)
         response.raise_for_status()
         return response.json()
@@ -213,6 +234,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Estilos CSS personalizados
 st.markdown("""
 <style>
     .header {
@@ -268,9 +290,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Header de la aplicación
 st.markdown('<div class="header">🍏 FruitAI Object Detector & Freshness Detector 🍌🍊</div>', unsafe_allow_html=True)
 st.markdown('<div class="subheader">Upload an image to detect multiple fruits and check their freshness</div>', unsafe_allow_html=True)
 
+# Barra lateral con información
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/415/415733.png", width=100)
     st.markdown("## About")
@@ -291,6 +315,7 @@ with st.sidebar:
     st.write("© 2024 FruitAI")
 
 
+# Main content area
 uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
@@ -308,7 +333,8 @@ if uploaded_file is not None:
             with st.spinner('Detecting objects and classifying freshness...'):
                 detection_model_path = "faster_rcnn_fruit_detector.pth"
                 classification_model_path = "modelo_resnet34.pth"
-                detected_objects = detect_fruits(image, detection_model_path=detection_model_path, classification_model_path=classification_model_path, confidence_threshold=0.5)
+                # Adjust confidence threshold if needed
+                detected_objects = detect_fruits(image, detection_model_path=detection_model_path, classification_model_path=classification_model_path, confidence_threshold=0.6)
                 time.sleep(1)
 
             st.subheader("Detection and Classification Results:")
@@ -316,19 +342,15 @@ if uploaded_file is not None:
             if detected_objects:
                 st.write(f"Found {len(detected_objects)} potential fruits:")
 
-                # Draw bounding boxes on the image with labels and freshness
+                # Draw bounding boxes on the image with labels, score, and freshness
                 draw_image = image.copy()
                 draw = ImageDraw.Draw(draw_image)
                 try:
-                    from PIL import ImageFont
                     # Try loading a common font, fall back to default
-                    font_path = "arial.ttf"
-                    if os.path.exists(font_path):
-                         font = ImageFont.truetype(font_path, 20)
-                    else:
-                         font = ImageFont.load_default()
+                    font_path = "arial.ttf" # Common font on many systems
+                    font = ImageFont.truetype(font_path, 20)
                 except IOError:
-                    font = ImageFont.load_default()
+                    font = ImageFontFont.load_default()
 
 
                 for obj in detected_objects:
@@ -346,15 +368,30 @@ if uploaded_file is not None:
 
                     draw.rectangle(box, outline=box_color, width=3)
 
+                    # Prepare text for bounding box
                     display_text = f"{label.capitalize()}: {score:.2f}"
-                    if freshness != 'N/A' and freshness != "Freshness prediction not available.":
+                    if freshness != 'N/A' and freshness != "Freshness prediction not available." and not freshness.startswith("Error"):
                          # Clean up freshness string for display
                          cleaned_freshness = freshness.replace(label, '').replace('fresh', 'FRESH').replace('rotten', 'ROTTEN').strip().upper()
                          display_text += f" ({cleaned_freshness})"
 
+                    # Position text slightly above the box
                     text_x = box[0]
-                    text_y = box[1] - 25 if box[1] > 25 else box[1] + 5
-                    draw.text((text_x, text_y), display_text, fill=box_color, font=font)
+                    # Estimate text height and position text above the box
+                    try:
+                        text_width, text_height = draw.textsize(display_text, font=font)
+                    except AttributeError: # Fallback for older PIL versions
+                         text_width, text_height = font.getsize(display_text)
+
+                    text_y = box[1] - text_height - 5 if box[1] - text_height - 5 > 0 else box[1] + 5
+
+
+                    # Draw text with a background for readability
+                    # Add a small padding to the text background box
+                    text_bg_box = (text_x, text_y, text_x + text_width + 5, text_y + text_height + 5) # Add padding
+                    draw.rectangle(text_bg_box, fill=box_color) # Draw background rectangle
+                    draw.text((text_x + 2, text_y + 2), display_text, fill="white", font=font) # Draw text with white color
+
 
                 st.image(draw_image, caption="Detected Fruits with Freshness.", use_column_width=True)
 
@@ -365,39 +402,48 @@ if uploaded_file is not None:
                     label = obj['label']
                     score = obj['score']
                     freshness = obj.get('freshness_prediction', 'N/A')
+                    box = obj['box']
 
-                    st.markdown(f"#### Fruit {i+1}: {label.capitalize()} (Confidence: {score:.2f})")
+                    # Use an expander for each fruit's details
+                    with st.expander(f"Fruit {i+1}: {label.capitalize()} (Confidence: {score:.2f})"):
 
-                    st.write(f"**Freshness:** {freshness}")
-
-                    # Get General Fruit Information from API
-                    api_info = get_fruit_info_from_api(label)
-
-                    if api_info:
-                        st.markdown('<div class="info-box">', unsafe_allow_html=True)
-                        st.markdown(f"**General Info for {api_info.get('name', 'N/A').capitalize()}:**", unsafe_allow_html=True)
-                        st.write(f"**Family:** {api_info.get('family', 'N/A')}")
-                        st.write(f"**Order:** {api_info.get('order', 'N/A')}")
-                        st.write(f"**Genus:** {api_info.get('genus', 'N/A')}")
-                        st.markdown('</div>', unsafe_allow_html=True)
-
-
-                        st.subheader("Nutritional Information:")
-                        nutritions = api_info.get('nutritions', {})
-                        if nutritions:
-                            st.markdown('<table class="nutrition-table">', unsafe_allow_html=True)
-                            st.markdown('<tr><th>Nutrient</th><th>Amount</th></tr>', unsafe_allow_html=True)
-                            st.markdown(f'<tr><td>Calories</td><td>{nutritions.get("calories", "N/A")}</td></tr>', unsafe_allow_html=True)
-                            st.markdown(f'<tr><td>Fat</td><td>{nutritions.get("fat", "N/A")}</td></tr>', unsafe_allow_html=True)
-                            st.markdown(f'<tr><td>Sugar</td><td>{nutritions.get("sugar", "N/A")}</td></tr>', unsafe_allow_html=True)
-                            st.markdown(f'<tr><td>Carbohydrates</td><td>{nutritions.get("carbohydrates", "N/A")}</td></tr>', unsafe_allow_html=True)
-                            st.markdown(f'<tr><td>Protein</td><td>{nutritions.get("protein", "N/A")}</td></tr>', unsafe_allow_html=True)
-                            st.markdown('</table>', unsafe_allow_html=True)
+                        # Display freshness with visual cues
+                        st.write("**Freshness:** ", end="")
+                        if 'fresh' in freshness.lower():
+                            st.markdown(f'<span style="color: green;">{freshness} ✨</span>', unsafe_allow_html=True)
+                        elif 'rotten' in freshness.lower():
+                             st.markdown(f'<span style="color: red;">{freshness} 🤢</span>', unsafe_allow_html=True)
                         else:
-                            st.write("Nutritional information not available.")
+                             st.write(freshness) # Display as plain text if unknown
 
-                    else:
-                        st.warning(f"Could not retrieve general fruit information from the API for {label}.")
+                        # Get General Fruit Information from API
+                        api_info = get_fruit_info_from_api(label)
+
+                        if api_info:
+                            st.markdown('<div class="info-box">', unsafe_allow_html=True)
+                            st.markdown(f"**General Info for {api_info.get('name', 'N/A').capitalize()}:**", unsafe_allow_html=True)
+                            st.write(f"**Family:** {api_info.get('family', 'N/A')}")
+                            st.write(f"**Order:** {api_info.get('order', 'N/A')}")
+                            st.write(f"**Genus:** {api_info.get('genus', 'N/A')}")
+                            st.markdown('</div>', unsafe_allow_html=True)
+
+
+                            st.subheader("Nutritional Information:")
+                            nutritions = api_info.get('nutritions', {})
+                            if nutritions:
+                                st.markdown('<table class="nutrition-table">', unsafe_allow_html=True)
+                                st.markdown('<tr><th>Nutrient</th><th>Amount</th></tr>', unsafe_allow_html=True)
+                                st.markdown(f'<tr><td>Calories</td><td>{nutritions.get("calories", "N/A")}</td></tr>', unsafe_allow_html=True)
+                                st.markdown(f'<tr><td>Fat</td><td>{nutritions.get("fat", "N/A")}</td></tr>', unsafe_allow_html=True)
+                                st.markdown(f'<tr><td>Sugar</td><td>{nutritions.get("sugar", "N/A")}</td></tr>', unsafe_allow_html=True)
+                                st.markdown(f'<tr><td>Carbohydrates</td><td>{nutritions.get("carbohydrates", "N/A")}</td></tr>', unsafe_allow_html=True)
+                                st.markdown(f'<tr><td>Protein</td><td>{nutritions.get("protein", "N/A")}</td></tr>', unsafe_allow_html=True)
+                                st.markdown('</table>', unsafe_allow_html=True)
+                            else:
+                                st.write("Nutritional information not available.")
+
+                        else:
+                            st.warning(f"Could not retrieve general fruit information from the API for {label}.")
 
                     st.markdown("---")
 
