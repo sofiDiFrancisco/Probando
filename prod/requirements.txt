@@ -1,5 +1,6 @@
+streamlit
 torch
 torchvision
-streamlit
 Pillow
 kagglehub
+requests
