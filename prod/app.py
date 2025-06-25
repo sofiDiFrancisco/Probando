@@ -1,3 +1,4 @@
+%%writefile app.py
 import streamlit as st
 import torch
 import torch.nn as nn
@@ -10,6 +11,7 @@ import requests
 import torch.nn.functional as F
 import numpy as np
 from pytorch_grad_cam.utils.image import show_cam_on_image # Import for visualization
+from utils import generate_gradcam_heatmap # Import the Grad-CAM function
 
 # --- Utility Functions (from utils.py) ---
 # Define the class names (must match the order used during training)
@@ -42,21 +44,21 @@ def preprocess_image(image: Image.Image):
     return transform(image).unsqueeze(0) # Add batch dimension, returns a tensor
 
 # Note: tensor_to_image is no longer needed for this task but kept for potential future use
-def tensor_to_image(tensor):
-    """Converts a normalized tensor back to a PIL Image for display."""
-    # Inverse normalization
-    inverse_normalize = transforms.Normalize(
-        mean=[-0.485/0.229, -0.456/0.224, -0.406/0.225],
-        std=[1/0.229, 1/0.224, 1/0.225]
-    )
-    denormalized_tensor = inverse_normalize(tensor.squeeze(0)) # Remove batch dimension
+# def tensor_to_image(tensor):
+#     """Converts a normalized tensor back to a PIL Image for display."""
+#     # Inverse normalization
+#     inverse_normalize = transforms.Normalize(
+#         mean=[-0.485/0.229, -0.456/0.224, -0.406/0.225],
+#         std=[1/0.229, 1/0.224, 1/0.225]
+#     )
+#     denormalized_tensor = inverse_normalize(tensor.squeeze(0)) # Remove batch dimension
 
-    # Clamp values to be in [0, 1] range
-    denormalized_tensor = torch.clamp(denormalized_tensor, 0, 1)
+#     # Clamp values to be in [0, 1] range
+#     denormalized_tensor = torch.clamp(denormalized_tensor, 0, 1)
 
-    # Convert tensor to PIL Image
-    image = transforms.ToPILImage()(denormalized_tensor)
-    return image
+#     # Convert tensor to PIL Image
+#     image = transforms.ToPILImage()(denormalized_tensor)
+#     return image
 
 
 def predict_image(model, image_tensor):
@@ -101,7 +103,6 @@ def get_fruit_freshness_info(predicted_class_name):
     }
     return fruit_info_map.get(predicted_class_name, "Could not retrieve freshness information for this fruit.")
 
-from utils import generate_gradcam_heatmap # Import the Grad-CAM function
 
 # --- Streamlit App Code ---
 # Configuración de la página
@@ -248,7 +249,6 @@ if uploaded_file is not None:
 
             # Convert the original PIL image to a numpy array and normalize for overlay
             image_np = np.array(image)
-            # Adjust the alpha (transparency) value in show_cam_on_image
             visualization = show_cam_on_image(image_np.astype(np.float32) / 255., heatmap, use_rgb=True, alpha=0.5)
 
             st.image(visualization, caption="Grad-CAM Heatmap", use_container_width=True)
