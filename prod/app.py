@@ -9,6 +9,7 @@ import os
 import time
 import requests # Import requests for the API call
 import torch.nn.functional as F # Import for softmax
+import numpy as np # Import numpy for image conversion
 
 # --- Utility Functions (from utils.py) ---
 # Define the class names (must match the order used during training)
@@ -38,7 +39,24 @@ def preprocess_image(image: Image.Image):
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
-    return transform(image).unsqueeze(0) # Add batch dimension
+    return transform(image).unsqueeze(0) # Add batch dimension, returns a tensor
+
+def tensor_to_image(tensor):
+    """Converts a normalized tensor back to a PIL Image for display."""
+    # Inverse normalization
+    inverse_normalize = transforms.Normalize(
+        mean=[-0.485/0.229, -0.456/0.224, -0.406/0.225],
+        std=[1/0.229, 1/0.224, 1/0.225]
+    )
+    denormalized_tensor = inverse_normalize(tensor.squeeze(0)) # Remove batch dimension
+
+    # Clamp values to be in [0, 1] range
+    denormalized_tensor = torch.clamp(denormalized_tensor, 0, 1)
+
+    # Convert tensor to PIL Image
+    image = transforms.ToPILImage()(denormalized_tensor)
+    return image
+
 
 def predict_image(model, image_tensor):
     """Makes a prediction using the loaded model."""
@@ -151,7 +169,7 @@ st.markdown("""
 st.markdown('<div class="header">🍏 FruiScan Detector de Frescura</div>', unsafe_allow_html=True)
 st.markdown('<div class="subheader">Sube una imagen para comprobar si tu fruta está fresca o podrida</div>', unsafe_allow_html=True)
 
-# Barra lateral con información
+# Barra lateral con información y configuraciones
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/415/415733.png", width=100)
     st.markdown("## About")
@@ -166,6 +184,9 @@ with st.sidebar:
     st.markdown("## API")
     st.info("[Fruityvice API](https://www.fruityvice.com/)")
     st.markdown("---")
+    st.markdown("## Settings")
+    confidence_threshold = st.slider("Confidence Threshold (%)", 0, 100, 50)
+    st.markdown("---")
     st.write("© 2025 FruitScan")
 
 
@@ -178,7 +199,9 @@ if uploaded_file is not None:
         col1, col2 = st.columns(2)
 
         with col1:
-            st.image(image, caption="Uploaded Image.", use_container_width=True)
+            st.image(image, caption="Uploaded Image (Original).", use_container_width=True)
+            st.write("") # Add some space
+
 
         with col2:
             st.write("")
@@ -195,25 +218,36 @@ if uploaded_file is not None:
                 # Preprocess the image
                 input_tensor = preprocess_image(image)
 
+                # Convert preprocessed tensor back to image for display
+                preprocessed_image_display = tensor_to_image(input_tensor.clone().detach()) # Clone to avoid modifying original tensor
+
                 # Make a prediction
                 predicted_class_name, probabilities = predict_image(model, input_tensor)
 
                 time.sleep(1) # Simulate processing time
 
+            # Display preprocessed image in the second column after classification
+            st.image(preprocessed_image_display, caption="Image (Preprocessed for Model).", use_container_width=True)
+
 
             st.subheader("Prediction:")
-            # Display predicted class with visual indicator
-            if 'fresh' in predicted_class_name:
-                st.markdown(f'<div class="result-box fresh">La fruta esta: **{predicted_class_name.replace("fresh", "").capitalize()} - FRESH** ✨</div>', unsafe_allow_html=True)
-            elif 'rotten' in predicted_class_name:
-                 st.markdown(f'<div class="result-box rotten">La fruta esta: **{predicted_class_name.replace("rotten", "").capitalize()} - ROTTEN** 🤢</div>', unsafe_allow_html=True)
-            else:
-                 st.info(f"The fruit is: **{predicted_class_name.capitalize()}**")
 
-            # Display probabilities
-            st.subheader("Probabilities:")
-            for i, prob in enumerate(probabilities):
-                st.write(f"- {class_names[i]}: {prob.item():.2f}")
+            # Determine prediction based on confidence threshold
+            max_prob = torch.max(probabilities).item()
+            predicted_class_index = torch.argmax(probabilities).item()
+            predicted_class_name_thresholded = class_names[predicted_class_index]
+
+            if max_prob * 100 < confidence_threshold:
+                 st.warning(f"Prediction below confidence threshold ({confidence_threshold}%): Could not confidently determine freshness.")
+            else:
+                # Display predicted class with visual indicator
+                if 'fresh' in predicted_class_name_thresholded:
+                    st.markdown(f'<div class="result-box fresh">La fruta esta: **{predicted_class_name_thresholded.replace("fresh", "").capitalize()} - FRESH** ✨</div>', unsafe_allow_html=True)
+                elif 'rotten' in predicted_class_name_thresholded:
+                     st.markdown(f'<div class="result-box rotten">La fruta esta: **{predicted_class_name_thresholded.replace("rotten", "").capitalize()} - ROTTEN** 🤢</div>', unsafe_allow_html=True)
+                else:
+                     st.info(f"The fruit is: **{predicted_class_name_thresholded.capitalize()}**")
+
 
 
             # Get freshness information
