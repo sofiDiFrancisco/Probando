@@ -1,15 +1,15 @@
-
 import streamlit as st
 import torch
-import torch.nn as nn # Import for model definition
+import torch.nn as nn
 from torchvision import models, transforms
 from PIL import Image
 import sys
 import os
 import time
-import requests # Import requests for the API call
-import torch.nn.functional as F # Import for softmax
-import numpy as np # Import numpy for image conversion
+import requests
+import torch.nn.functional as F
+import numpy as np
+from pytorch_grad_cam.utils.image import show_cam_on_image # Import for visualization
 
 # --- Utility Functions (from utils.py) ---
 # Define the class names (must match the order used during training)
@@ -41,6 +41,7 @@ def preprocess_image(image: Image.Image):
     ])
     return transform(image).unsqueeze(0) # Add batch dimension, returns a tensor
 
+# Note: tensor_to_image is no longer needed for this task but kept for potential future use
 def tensor_to_image(tensor):
     """Converts a normalized tensor back to a PIL Image for display."""
     # Inverse normalization
@@ -99,6 +100,8 @@ def get_fruit_freshness_info(predicted_class_name):
         'rottenoranges': "Esta naranja esta podrida y debe ser desechada."
     }
     return fruit_info_map.get(predicted_class_name, "Could not retrieve freshness information for this fruit.")
+
+from utils import generate_gradcam_heatmap # Import the Grad-CAM function
 
 # --- Streamlit App Code ---
 # Configuración de la página
@@ -184,8 +187,6 @@ with st.sidebar:
     st.markdown("## API")
     st.info("[Fruityvice API](https://www.fruityvice.com/)")
     st.markdown("---")
-    st.markdown("## Settings")
-    confidence_threshold = st.slider("Confidence Threshold (%)", 0, 100, 50)
     st.markdown("---")
     st.write("© 2025 FruitScan")
 
@@ -196,101 +197,103 @@ uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png
 if uploaded_file is not None:
     try:
         image = Image.open(uploaded_file).convert('RGB')
-        col1, col2 = st.columns(2)
 
-        with col1:
-            st.image(image, caption="Uploaded Image (Original).", use_container_width=True)
-            st.write("") # Add some space
+        st.image(image, caption="Uploaded Image.", use_container_width=True)
+        st.write("") # Add some space
 
 
-        with col2:
-            st.write("")
-            st.write("Classifying...")
+        st.write("Classifying...")
 
-            # Add a spinner while classifying
-            with st.spinner('Analyzing image...'):
-                # Load the model (ensure the path is correct relative to where app.py will run)
-                # Use the correct model filename
-                model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "modelo.pth")
-                num_classes = len(class_names) # Get the number of classes from utils
-                model = load_model(model_path, num_classes)
+        # Add a spinner while classifying
+        with st.spinner('Analyzing image...'):
+            # Load the model (ensure the path is correct relative to where app.py will run)
+            # Use the correct model filename
+            model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "modelo.pth")
+            num_classes = len(class_names) # Get the number of classes from utils
+            model = load_model(model_path, num_classes)
 
-                # Preprocess the image
-                input_tensor = preprocess_image(image)
+            # Preprocess the image
+            input_tensor = preprocess_image(image)
 
-                # Convert preprocessed tensor back to image for display
-                preprocessed_image_display = tensor_to_image(input_tensor.clone().detach()) # Clone to avoid modifying original tensor
+            # Make a prediction
+            predicted_class_name, probabilities = predict_image(model, input_tensor)
 
-                # Make a prediction
-                predicted_class_name, probabilities = predict_image(model, input_tensor)
-
-                time.sleep(1) # Simulate processing time
-
-            # Display preprocessed image in the second column after classification
-            st.image(preprocessed_image_display, caption="Image (Preprocessed for Model).", use_container_width=True)
+            time.sleep(1) # Simulate processing time
 
 
-            st.subheader("Prediction:")
+        st.subheader("Prediction:")
 
-            # Determine prediction based on confidence threshold
-            max_prob = torch.max(probabilities).item()
-            predicted_class_index = torch.argmax(probabilities).item()
-            predicted_class_name_thresholded = class_names[predicted_class_index]
+        # Display predicted class with visual indicator
+        if 'fresh' in predicted_class_name:
+            st.markdown(f'<div class="result-box fresh">La fruta esta: **{predicted_class_name.replace("fresh", "").capitalize()} - FRESH** ✨</div>', unsafe_allow_html=True)
+        elif 'rotten' in predicted_class_name:
+             st.markdown(f'<div class="result-box rotten">La fruta esta: **{predicted_class_name.replace("rotten", "").capitalize()} - ROTTEN** 🤢</div>', unsafe_allow_html=True)
+        else:
+             st.info(f"The fruit is: **{predicted_class_name.capitalize()}**")
 
-            if max_prob * 100 < confidence_threshold:
-                 st.warning(f"Prediction below confidence threshold ({confidence_threshold}%): Could not confidently determine freshness.")
+
+        # Get freshness information
+        freshness_info = get_fruit_freshness_info(predicted_class_name)
+        st.subheader("Freshness Information:")
+        st.write(freshness_info)
+
+        st.markdown("---") # Separator
+
+        # --- Grad-CAM Visualization ---
+        st.subheader("Model Attention (Grad-CAM Heatmap):")
+        try:
+            # For ResNet34, a common target layer is the last convolutional layer
+            target_layer = model.layer4[-1]
+            heatmap = generate_gradcam_heatmap(model, target_layer, input_tensor)
+
+            # Convert the original PIL image to a numpy array and normalize for overlay
+            image_np = np.array(image)
+            # Adjust the alpha (transparency) value in show_cam_on_image
+            visualization = show_cam_on_image(image_np.astype(np.float32) / 255., heatmap, use_rgb=True, alpha=0.5)
+
+            st.image(visualization, caption="Grad-CAM Heatmap", use_container_width=True)
+
+        except Exception as gradcam_error:
+            st.warning(f"Could not generate Grad-CAM heatmap: {gradcam_error}")
+            st.info("Please ensure the model architecture and target layer are correctly specified for Grad-CAM.")
+
+
+        st.markdown("---") # Separator
+
+
+        # Get general fruit information from API
+        # Clean the predicted name for the API call
+        clean_fruit_name_for_api = predicted_class_name.replace('fresh', '').replace('rotten', '')
+        if clean_fruit_name_for_api.endswith('s'):
+          clean_fruit_name_for_api = clean_fruit_name_for_api[:-1]
+
+        api_info = get_fruit_info_from_api(clean_fruit_name_for_api)
+
+        if api_info:
+            st.subheader(f"General Fruit Information ({api_info.get('name', 'N/A')})")
+            st.markdown('<div class="info-box">', unsafe_allow_html=True)
+            st.write(f"**Family:** {api_info.get('family', 'N/A')}")
+            st.write(f"**Order:** {api_info.get('order', 'N/A')}")
+            st.write(f"**Genus:** {api_info.get('genus', 'N/A')}")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+
+            st.subheader("Informacion Nutricional:")
+            nutritions = api_info.get('nutritions', {})
+            if nutritions:
+                st.markdown('<table class="nutrition-table">', unsafe_allow_html=True)
+                st.markdown('<tr><th>Nutrient</th><th>Amount</th></tr>', unsafe_allow_html=True)
+                st.markdown(f'<tr><td>Calories</td><td>{nutritions.get("calories", "N/A")}</td></tr>', unsafe_allow_html=True)
+                st.markdown(f'<tr><td>Fat</td><td>{nutritions.get("fat", "N/A")}</td></tr>', unsafe_allow_html=True)
+                st.markdown(f'<tr><td>Sugar</td><td>{nutritions.get("sugar", "N/A")}</td></tr>', unsafe_allow_html=True)
+                st.markdown(f'<tr><td>Carbohydrates</td><td>{nutritions.get("carbohydrates", "N/A")}</td></tr>', unsafe_allow_html=True)
+                st.markdown(f'<tr><td>Protein</td><td>{nutritions.get("protein", "N/A")}</td></tr>', unsafe_allow_html=True)
+                st.markdown('</table>', unsafe_allow_html=True)
             else:
-                # Display predicted class with visual indicator
-                if 'fresh' in predicted_class_name_thresholded:
-                    st.markdown(f'<div class="result-box fresh">La fruta esta: **{predicted_class_name_thresholded.replace("fresh", "").capitalize()} - FRESH** ✨</div>', unsafe_allow_html=True)
-                elif 'rotten' in predicted_class_name_thresholded:
-                     st.markdown(f'<div class="result-box rotten">La fruta esta: **{predicted_class_name_thresholded.replace("rotten", "").capitalize()} - ROTTEN** 🤢</div>', unsafe_allow_html=True)
-                else:
-                     st.info(f"The fruit is: **{predicted_class_name_thresholded.capitalize()}**")
+                st.write("Nutritional information not available.")
 
-
-
-            # Get freshness information
-            freshness_info = get_fruit_freshness_info(predicted_class_name)
-            st.subheader("Freshness Information:")
-            st.write(freshness_info)
-
-            st.markdown("---") # Separator
-
-
-            # Get general fruit information from API
-            # Clean the predicted name for the API call
-            clean_fruit_name_for_api = predicted_class_name.replace('fresh', '').replace('rotten', '')
-            if clean_fruit_name_for_api.endswith('s'):
-              clean_fruit_name_for_api = clean_fruit_name_for_api[:-1]
-
-            api_info = get_fruit_info_from_api(clean_fruit_name_for_api)
-
-            if api_info:
-                st.subheader(f"General Fruit Information ({api_info.get('name', 'N/A')})")
-                st.markdown('<div class="info-box">', unsafe_allow_html=True)
-                st.write(f"**Family:** {api_info.get('family', 'N/A')}")
-                st.write(f"**Order:** {api_info.get('order', 'N/A')}")
-                st.write(f"**Genus:** {api_info.get('genus', 'N/A')}")
-                st.markdown('</div>', unsafe_allow_html=True)
-
-
-                st.subheader("Informacion Nutricional:")
-                nutritions = api_info.get('nutritions', {})
-                if nutritions:
-                    st.markdown('<table class="nutrition-table">', unsafe_allow_html=True)
-                    st.markdown('<tr><th>Nutrient</th><th>Amount</th></tr>', unsafe_allow_html=True)
-                    st.markdown(f'<tr><td>Calories</td><td>{nutritions.get("calories", "N/A")}</td></tr>', unsafe_allow_html=True)
-                    st.markdown(f'<tr><td>Fat</td><td>{nutritions.get("fat", "N/A")}</td></tr>', unsafe_allow_html=True)
-                    st.markdown(f'<tr><td>Sugar</td><td>{nutritions.get("sugar", "N/A")}</td></tr>', unsafe_allow_html=True)
-                    st.markdown(f'<tr><td>Carbohydrates</td><td>{nutritions.get("carbohydrates", "N/A")}</td></tr>', unsafe_allow_html=True)
-                    st.markdown(f'<tr><td>Protein</td><td>{nutritions.get("protein", "N/A")}</td></tr>', unsafe_allow_html=True)
-                    st.markdown('</table>', unsafe_allow_html=True)
-                else:
-                    st.write("Nutritional information not available.")
-
-            else:
-                st.warning("Could not retrieve general fruit information from the API.")
+        else:
+            st.warning("Could not retrieve general fruit information from the API.")
 
 
     except FileNotFoundError:
